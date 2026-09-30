@@ -1,6 +1,7 @@
 from qgis.PyQt.QtCore import QCoreApplication
 
 from qgis.core import (
+    Qgis,
     QgsProcessingAlgorithm,
     QgsProcessingException,
     QgsProject,
@@ -10,20 +11,15 @@ from qgis.core import (
 
 class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
 
-    NOM_COUCHE = 'IGNF_LIDAR-HD_METADONNEE:metadata'
+    NOM_COUCHE = "IGNF_LIDAR-HD_METADONNEE:metadata"
 
-    WFS_URI = (
-        "restrictToRequestBBOX='1' "
-        "srsname='EPSG:2154' "
-        "typename='IGNF_LIDAR-HD_METADONNEE:metadata' "
-        "url='https://data.geopf.fr/wfs/ows' "
-        "url='https://data.geopf.fr/wfs/ows?VERSION=2.0.0' "
-        "version='auto'"
-    )
+    # =========================================================
+    # INFORMATIONS PROCESSING
+    # =========================================================
 
     def tr(self, string):
         return QCoreApplication.translate(
-            'ChargerDallageLidarIGN',
+            "ChargerDallageLidarIGN",
             string
         )
 
@@ -31,16 +27,18 @@ class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
         return ChargerDallageLidarIGN()
 
     def name(self):
-        return 'charger_dallage_lidar_ign'
+        return "charger_dallage_lidar_ign"
 
     def displayName(self):
-        return self.tr('1 - Charger le dallage LiDAR IGN')
+        return self.tr(
+            "1 - Charger le dallage LiDAR IGN"
+        )
 
     def group(self):
-        return self.tr('LiDAR IGN')
+        return self.tr("LiDAR IGN")
 
     def groupId(self):
-        return 'lidar_ign'
+        return "lidar_ign"
 
     def shortHelpString(self):
         return self.tr(
@@ -48,21 +46,39 @@ class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
             <h2>Charger le dallage LiDAR HD IGN</h2>
 
             <p>
-            Ajoute au projet QGIS la couche WFS représentant
-            les emprises des dalles LiDAR HD de l'IGN.
+            Charge dans le projet QGIS le dallage du
+            LiDAR HD IGN depuis le service WFS de la
+            Géoplateforme.
             </p>
 
             <p>
-            Une fois la couche chargée, sélectionnez les dalles
-            souhaitées puis utilisez :
+            Sélectionnez ensuite une ou plusieurs dalles
+            puis utilisez :
             <b>2 - Télécharger les données LiDAR IGN</b>.
             </p>
             """
         )
 
+    # =========================================================
+    # AUCUN PARAMÈTRE
+    # =========================================================
+
     def initAlgorithm(self, config=None):
-        # Aucun paramètre nécessaire
         pass
+
+    # =========================================================
+    # THREAD PRINCIPAL QGIS
+    # =========================================================
+
+    def flags(self):
+        return (
+            super().flags()
+            | Qgis.ProcessingAlgorithmFlag.NoThreading
+        )
+
+    # =========================================================
+    # TRAITEMENT
+    # =========================================================
 
     def processAlgorithm(
         self,
@@ -71,14 +87,20 @@ class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
         feedback
     ):
 
-        project = QgsProject.instance()
+        project = context.project()
 
-        # Vérifie si elle est déjà présente
+        if project is None:
+            project = QgsProject.instance()
+
+        # -----------------------------------------------------
+        # Vérifie si le dallage est déjà présent
+        # -----------------------------------------------------
+
         for layer in project.mapLayers().values():
 
             if (
-                layer.name() == self.NOM_COUCHE
-                and isinstance(layer, QgsVectorLayer)
+                isinstance(layer, QgsVectorLayer)
+                and layer.name() == self.NOM_COUCHE
             ):
 
                 feedback.pushInfo(
@@ -88,33 +110,54 @@ class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
 
                 return {}
 
-        # Chargement du WFS
+        # =====================================================
+        # CONNEXION WFS
+        # =====================================================
+
+        uri = (
+            "restrictToRequestBBOX='1' "
+            "srsname='EPSG:2154' "
+            "typename='IGNF_LIDAR-HD_METADONNEE:metadata' "
+            "url='https://data.geopf.fr/wfs/ows?VERSION=2.0.0' "
+            "version='auto'"
+        )
+
         feedback.pushInfo(
             "Connexion au WFS LiDAR HD IGN..."
         )
 
+        # =====================================================
+        # CRÉATION DE LA COUCHE
+        # =====================================================
+
         layer = QgsVectorLayer(
-            self.WFS_URI,
+            uri,
             self.NOM_COUCHE,
-            'WFS'
+            "WFS"
         )
 
         if not layer.isValid():
 
             raise QgsProcessingException(
                 "Impossible de charger le dallage "
-                "LiDAR IGN depuis le WFS."
+                "LiDAR HD IGN depuis le WFS."
             )
+
+        # =====================================================
+        # AJOUT AU PROJET
+        # =====================================================
 
         project.addMapLayer(layer)
 
+        layer.triggerRepaint()
+
         feedback.pushInfo(
-            "Dallage LiDAR IGN ajouté au projet."
+            "Dallage LiDAR HD IGN ajouté au projet."
         )
 
         feedback.pushInfo(
-            "Vous pouvez maintenant sélectionner "
-            "les dalles à télécharger."
+            "Sélectionnez maintenant les dalles "
+            "à télécharger."
         )
 
         return {}

@@ -144,10 +144,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             )
         )
 
-        # -----------------------------------------------------
-        # Dossier Téléchargements de l'utilisateur
-        # -----------------------------------------------------
-
         dossier_telechargements = (
             QStandardPaths.writableLocation(
                 QStandardPaths.DownloadLocation
@@ -230,11 +226,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                 timeout=120
             ) as response:
 
-                # ---------------------------------------------
-                # Taille totale du fichier, si fournie
-                # par le serveur
-                # ---------------------------------------------
-
                 taille_totale = response.headers.get(
                     "Content-Length"
                 )
@@ -252,19 +243,11 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                     while True:
 
-                        # -------------------------------------
-                        # ANNULATION PAR L'UTILISATEUR
-                        # -------------------------------------
-
                         if feedback.isCanceled():
 
                             raise QgsProcessingException(
                                 "Téléchargement annulé."
                             )
-
-                        # -------------------------------------
-                        # Lecture par blocs de 1 Mo
-                        # -------------------------------------
 
                         chunk = response.read(
                             1024 * 1024
@@ -276,15 +259,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                         output.write(chunk)
 
                         telecharge += len(chunk)
-
-                        # -------------------------------------
-                        # PROGRESSION GLOBALE
-                        #
-                        # Exemple avec 4 dalles :
-                        # dalle 1 = 0 -> 25 %
-                        # dalle 2 = 25 -> 50 %
-                        # etc.
-                        # -------------------------------------
 
                         if taille_totale:
 
@@ -306,10 +280,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
         except Exception:
 
-            # ---------------------------------------------
-            # Ne jamais conserver un téléchargement partiel
-            # ---------------------------------------------
-
             if os.path.exists(fichier):
 
                 try:
@@ -321,9 +291,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
     # =========================================================
     # TRAITEMENT PRINCIPAL
-    #
-    # Cette partie peut fonctionner dans le thread Processing.
-    # AUCUNE création de QgsPointCloudLayer ici.
     # =========================================================
 
     def processAlgorithm(
@@ -332,10 +299,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
         context,
         feedback
     ):
-
-        # -----------------------------------------------------
-        # Liste utilisée ensuite par postProcessAlgorithm()
-        # -----------------------------------------------------
 
         self.fichiers_a_charger = []
 
@@ -375,10 +338,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                 "avant de lancer le téléchargement.\n\n"
                 "Aucun téléchargement n'a été effectué."
             )
-
-        # -----------------------------------------------------
-        # Copie des entités sélectionnées
-        # -----------------------------------------------------
 
         features = layer.selectedFeatures()
 
@@ -491,10 +450,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             if feedback.isCanceled():
                 break
 
-            # =================================================
-            # URL
-            # =================================================
-
             url = feature[champ_url]
 
             if not url:
@@ -605,11 +560,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                         f"({taille_mo:.1f} Mo)"
                     )
 
-                    # -----------------------------------------
-                    # Si le fichier existe, on avance quand
-                    # même la barre de progression.
-                    # -----------------------------------------
-
                     feedback.setProgress(
                         int(
                             ((i + 1) / total) * 100
@@ -642,10 +592,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                 self.nb_erreurs += 1
 
-        # =====================================================
-        # FIN DE LA PARTIE TÉLÉCHARGEMENT
-        # =====================================================
-
         feedback.pushInfo('')
         feedback.pushInfo(
             "Téléchargements terminés."
@@ -662,11 +608,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
     # =========================================================
     # POST-TRAITEMENT
-    #
-    # QGIS appelle cette méthode APRÈS processAlgorithm().
-    #
-    # C'est ici que l'on crée les couches, et notamment
-    # QgsPointCloudLayer.
     # =========================================================
 
     def postProcessAlgorithm(
@@ -676,10 +617,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
     ):
 
         nb_charges = 0
-
-        # =====================================================
-        # AJOUT DEMANDÉ ?
-        # =====================================================
 
         if self.ajouter_apres:
 
@@ -720,10 +657,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                     fichier
                 )
 
-                # ---------------------------------------------
-                # Déjà chargé
-                # ---------------------------------------------
-
                 if fichier_absolu in sources_existantes:
 
                     feedback.pushInfo(
@@ -748,9 +681,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                     # =========================================
                     # COPC
-                    #
-                    # C'est exactement la méthode qui avait
-                    # fonctionné dans la console QGIS.
                     # =========================================
 
                     else:
