@@ -16,8 +16,25 @@ from qgis.core import (
 
 import os
 import time
+import urllib.error
 import urllib.request
 from urllib.parse import urlparse, parse_qs, unquote, quote
+
+
+class TelechargementAnnule(Exception):
+    """Annulation demandée par l'utilisateur."""
+
+
+def erreur_temporaire(erreur):
+
+    # Seules les erreurs qui peuvent disparaître d'elles-mêmes
+    # (délai dépassé, coupure réseau, serveur surchargé) valent
+    # une nouvelle tentative ; pas un 404 ou un 403.
+
+    if isinstance(erreur, urllib.error.HTTPError):
+        return erreur.code >= 500 or erreur.code in (408, 429)
+
+    return True
 
 
 class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
@@ -322,10 +339,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                     while True:
 
                         if feedback.isCanceled():
-
-                            raise QgsProcessingException(
-                                "Téléchargement annulé."
-                            )
+                            raise TelechargementAnnule()
 
                         chunk = response.read(
                             1024 * 1024
@@ -685,12 +699,15 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                             break
 
-                        except QgsProcessingException:
+                        except TelechargementAnnule:
                             raise
 
                         except Exception as e:
 
-                            if tentative == self.NB_TENTATIVES:
+                            if (
+                                tentative == self.NB_TENTATIVES
+                                or not erreur_temporaire(e)
+                            ):
                                 raise
 
                             feedback.pushWarning(
@@ -700,6 +717,9 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                             )
 
                             time.sleep(5)
+
+                            if feedback.isCanceled():
+                                raise TelechargementAnnule()
 
                     self.nb_telecharges += 1
 
@@ -747,8 +767,8 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                         )
                     )
 
-            except QgsProcessingException:
-                raise
+            except TelechargementAnnule:
+                break
 
             except Exception as e:
 
@@ -758,6 +778,27 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                 )
 
                 self.nb_erreurs += 1
+
+        # =====================================================
+        # ANNULATION
+        # =====================================================
+
+        # Après une annulation, QGIS n'appelle pas
+        # postProcessAlgorithm : les couches ne peuvent pas
+        # être ajoutées, mais les fichiers complets restent
+        # dans le dossier et seront repris au prochain
+        # lancement.
+
+        if feedback.isCanceled():
+
+            feedback.pushWarning(
+                f"Annulé. {self.nb_telecharges} dalle(s) "
+                f"téléchargée(s) conservée(s) dans {dossier}. "
+                "Relancez avec la même sélection pour "
+                "terminer et les ajouter au projet."
+            )
+
+            return {self.DOSSIER: dossier}
 
         feedback.pushInfo('')
         feedback.pushInfo(
@@ -894,26 +935,6 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                     )
 
                     nb_charges += 1
-
-                    # =========================================
-                    # DIAGNOSTIC COPC
-                    # =========================================
-
-                    if data_type == 3:
-
-                        feedback.pushInfo(
-                            f"    → provider : "
-                            f"{couche.providerType()}"
-                        )
-
-                        renderer = couche.renderer()
-
-                        if renderer is not None:
-
-                            feedback.pushInfo(
-                                f"    → renderer : "
-                                f"{renderer.type()}"
-                            )
 
                     couche.triggerRepaint()
 
