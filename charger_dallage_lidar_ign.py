@@ -1,4 +1,5 @@
 from qgis.PyQt.QtCore import QCoreApplication
+from qgis.utils import iface
 
 from qgis.core import (
     Qgis,
@@ -71,10 +72,41 @@ class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
     # =========================================================
 
     def flags(self):
-        return (
-            super().flags()
-            | Qgis.ProcessingAlgorithmFlag.NoThreading
-        )
+
+        # Qgis.ProcessingAlgorithmFlag n'existe qu'à
+        # partir de QGIS 3.36.
+
+        try:
+            sans_thread = (
+                Qgis.ProcessingAlgorithmFlag.NoThreading
+            )
+        except AttributeError:
+            sans_thread = (
+                QgsProcessingAlgorithm.FlagNoThreading
+            )
+
+        return super().flags() | sans_thread
+
+    # =========================================================
+    # MESSAGES
+    # =========================================================
+
+    def informer(self, feedback, message, niveau=Qgis.Info):
+
+        # Sans paramètre, l'algorithme est lancé sans
+        # fenêtre ni journal : le message est donc aussi
+        # affiché dans la barre de messages de QGIS.
+
+        feedback.pushInfo(message)
+
+        if iface is not None:
+
+            iface.messageBar().pushMessage(
+                "LiDAR IGN",
+                message,
+                niveau,
+                5
+            )
 
     # =========================================================
     # TRAITEMENT
@@ -94,18 +126,21 @@ class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
 
         # -----------------------------------------------------
         # Vérifie si le dallage est déjà présent
+        # (reconnu à sa source WFS, même s'il a été renommé)
         # -----------------------------------------------------
 
         for layer in project.mapLayers().values():
 
             if (
                 isinstance(layer, QgsVectorLayer)
-                and layer.name() == self.NOM_COUCHE
+                and layer.providerType() == "WFS"
+                and self.NOM_COUCHE in layer.source()
             ):
 
-                feedback.pushInfo(
-                    "Le dallage LiDAR IGN est déjà présent "
-                    "dans le projet."
+                self.informer(
+                    feedback,
+                    f"Le dallage LiDAR IGN est déjà présent "
+                    f"dans le projet (couche « {layer.name()} »)."
                 )
 
                 return {}
@@ -151,13 +186,12 @@ class ChargerDallageLidarIGN(QgsProcessingAlgorithm):
 
         layer.triggerRepaint()
 
-        feedback.pushInfo(
-            "Dallage LiDAR HD IGN ajouté au projet."
-        )
-
-        feedback.pushInfo(
+        self.informer(
+            feedback,
+            "Dallage LiDAR HD IGN ajouté au projet. "
             "Sélectionnez maintenant les dalles "
-            "à télécharger."
+            "à télécharger.",
+            Qgis.Success
         )
 
         return {}

@@ -1,4 +1,5 @@
 from qgis.PyQt.QtCore import QCoreApplication, QStandardPaths
+from qgis.PyQt.QtNetwork import QNetworkProxy
 
 from qgis.core import (
     QgsProcessingAlgorithm,
@@ -7,6 +8,7 @@ from qgis.core import (
     QgsProcessingParameterBoolean,
     QgsProcessingException,
     QgsProject,
+    QgsNetworkAccessManager,
     QgsVectorLayer,
     QgsRasterLayer,
     QgsPointCloudLayer
@@ -15,7 +17,7 @@ from qgis.core import (
 import os
 import time
 import urllib.request
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 
 class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
@@ -198,17 +200,68 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
     # RECHERCHE DU DALLAGE
     # =========================================================
 
-    def trouver_couche_emprise(self):
+    def trouver_couche_emprise(self, project):
 
-        for layer in QgsProject.instance().mapLayers().values():
+        # La couche est reconnue à sa source WFS et non
+        # à son nom : elle reste trouvée si l'utilisateur
+        # la renomme.
+
+        for layer in project.mapLayers().values():
 
             if (
-                layer.name() == self.NOM_COUCHE
-                and isinstance(layer, QgsVectorLayer)
+                isinstance(layer, QgsVectorLayer)
+                and layer.providerType() == 'WFS'
+                and self.NOM_COUCHE in layer.source()
             ):
                 return layer
 
         return None
+
+    # =========================================================
+    # PROXY
+    # =========================================================
+
+    def construire_opener(self):
+
+        # Reprend le proxy HTTP configuré dans QGIS
+        # (Préférences > Réseau), que urllib ignore
+        # sinon. Sans proxy QGIS, urllib garde son
+        # comportement habituel (variables d'environnement).
+
+        proxy = (
+            QgsNetworkAccessManager.instance()
+            .fallbackProxy()
+        )
+
+        types_http = (
+            QNetworkProxy.ProxyType.HttpProxy,
+            QNetworkProxy.ProxyType.HttpCachingProxy
+        )
+
+        if proxy.type() in types_http and proxy.hostName():
+
+            identifiants = ''
+
+            if proxy.user():
+
+                identifiants = (
+                    f"{quote(proxy.user(), safe='')}:"
+                    f"{quote(proxy.password(), safe='')}@"
+                )
+
+            adresse = (
+                f"http://{identifiants}"
+                f"{proxy.hostName()}:{proxy.port()}"
+            )
+
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({
+                    'http': adresse,
+                    'https': adresse
+                })
+            )
+
+        return urllib.request.build_opener()
 
     # =========================================================
     # TÉLÉCHARGEMENT
@@ -246,7 +299,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
         try:
 
-            with urllib.request.urlopen(
+            with self.opener.open(
                 request,
                 timeout=self.DELAI_REPONSE
             ) as response:
@@ -303,6 +356,18 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                                 int(progression_globale)
                             )
 
+                        # Taille inconnue : pas de barre de
+                        # progression possible, on indique
+                        # la quantité reçue tous les 50 Mo.
+
+                        elif telecharge % (50 * 1024 * 1024) < len(chunk):
+
+                            feedback.pushInfo(
+                                f"    → "
+                                f"{telecharge / (1024 * 1024):.0f}"
+                                f" Mo reçus..."
+                            )
+
             # =================================================
             # CONTRÔLE DE LA TAILLE
             # =================================================
@@ -352,7 +417,12 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
         # DALLAGE
         # =====================================================
 
-        layer = self.trouver_couche_emprise()
+        project = context.project()
+
+        if project is None:
+            project = QgsProject.instance()
+
+        layer = self.trouver_couche_emprise(project)
 
         if layer is None:
 
@@ -406,6 +476,12 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             (feature.id(), feature[champ_url])
             for feature in layer.selectedFeatures()
         ]
+
+        # =====================================================
+        # CONNEXION (PROXY QGIS)
+        # =====================================================
+
+        self.opener = self.construire_opener()
 
         return True
 
@@ -541,7 +617,14 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                         ]
                     )[0]
 
-                    nom = unquote(nom)
+                    # basename : le nom ne peut pas
+                    # désigner un autre dossier (« ../ »).
+
+                    nom = os.path.basename(unquote(nom))
+
+                    if not nom:
+
+                        nom = f'{nom_type}_{fid}.tif'
 
                 # =============================================
                 # NOM NPL
@@ -549,10 +632,8 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                 else:
 
-                    nom = unquote(
-                        os.path.basename(
-                            urlparse(url).path
-                        )
+                    nom = os.path.basename(
+                        unquote(urlparse(url).path)
                     )
 
                     if not nom:
@@ -690,7 +771,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                 "ajoutées au projet."
             )
 
-        return {}
+        return {self.DOSSIER: dossier}
 
     # =========================================================
     # POST-TRAITEMENT
@@ -706,10 +787,13 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
         if self.ajouter_apres:
 
-            project = QgsProject.instance()
+            project = context.project()
+
+            if project is None:
+                project = QgsProject.instance()
 
             # -------------------------------------------------
-            # Sources déjà chargées
+            # Fichiers déjà chargés
             # -------------------------------------------------
 
             sources_existantes = set()
@@ -720,7 +804,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                     source = lyr.source()
 
-                    if source:
+                    if source and os.path.isfile(source):
 
                         sources_existantes.add(
                             os.path.abspath(source)
@@ -895,4 +979,4 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             f'Dossier : {self.dossier_final}'
         )
 
-        return {}
+        return {self.DOSSIER: self.dossier_final}

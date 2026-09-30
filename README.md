@@ -26,8 +26,11 @@ outils Processing.
 
 ## Prérequis
 
-- QGIS 3.36 ou plus récent (utilisation de `Qgis.ProcessingAlgorithmFlag`)
-- Une connexion Internet (accès à `data.geopf.fr`)
+- QGIS 3.26 ou plus récent (lecture des nuages de points COPC) ; testé
+  avec QGIS 3.44
+- Une connexion Internet (accès à `data.geopf.fr`). Le proxy HTTP
+  configuré dans QGIS (Préférences > Réseau) est utilisé pour les
+  téléchargements.
 
 ## Installation
 
@@ -65,7 +68,9 @@ Puis redémarrer QGIS.
 ![Téléchargement de nuages de points LiDAR (NPL) pour deux dalles sélectionnées](charger_lidar.png)
 
 Seules les dalles sélectionnées sont téléchargées. Les fichiers déjà présents
-dans le dossier ne sont pas téléchargés à nouveau. Un bilan s'affiche à la fin
+dans le dossier ne sont pas téléchargés à nouveau. Un téléchargement en cours
+est écrit dans un fichier `.part`, renommé seulement une fois complet ; en cas
+d'absence de réponse du serveur, le script retente jusqu'à 3 fois. Un bilan s'affiche à la fin
 dans le journal : nombre de dalles téléchargées, déjà présentes, ajoutées au
 projet, et nombre d'erreurs.
 
