@@ -13,6 +13,7 @@ from qgis.core import (
 )
 
 import os
+import time
 import urllib.request
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -24,6 +25,9 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
     AJOUTER = 'AJOUTER'
 
     NOM_COUCHE = 'IGNF_LIDAR-HD_METADONNEE:metadata'
+
+    NB_TENTATIVES = 3
+    DELAI_REPONSE = 60
 
     # =========================================================
     # INFORMATIONS PROCESSING
@@ -205,6 +209,13 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
         total_dalles
     ):
 
+        # Écriture dans un fichier temporaire, renommé
+        # seulement une fois le téléchargement complet :
+        # un fichier interrompu n'est jamais pris pour
+        # un fichier déjà présent.
+
+        fichier_partiel = fichier + ".part"
+
         request = urllib.request.Request(
             url,
             headers={
@@ -223,7 +234,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
             with urllib.request.urlopen(
                 request,
-                timeout=120
+                timeout=self.DELAI_REPONSE
             ) as response:
 
                 taille_totale = response.headers.get(
@@ -239,7 +250,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                 telecharge = 0
 
-                with open(fichier, "wb") as output:
+                with open(fichier_partiel, "wb") as output:
 
                     while True:
 
@@ -278,12 +289,30 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                                 int(progression_globale)
                             )
 
+            # =================================================
+            # CONTRÔLE DE LA TAILLE
+            # =================================================
+
+            if taille_totale and telecharge != taille_totale:
+
+                raise IOError(
+                    f"téléchargement incomplet "
+                    f"({telecharge} octets reçus "
+                    f"sur {taille_totale})"
+                )
+
+            # =================================================
+            # RENOMMAGE DU FICHIER COMPLET
+            # =================================================
+
+            os.replace(fichier_partiel, fichier)
+
         except Exception:
 
-            if os.path.exists(fichier):
+            if os.path.exists(fichier_partiel):
 
                 try:
-                    os.remove(fichier)
+                    os.remove(fichier_partiel)
                 except Exception:
                     pass
 
@@ -526,13 +555,40 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                         "    → téléchargement..."
                     )
 
-                    self.telecharger(
-                        url,
-                        fichier,
-                        feedback,
-                        i,
-                        total
-                    )
+                    # Le serveur IGN ne répond parfois pas :
+                    # on retente avant de compter une erreur.
+
+                    for tentative in range(
+                        1, self.NB_TENTATIVES + 1
+                    ):
+
+                        try:
+
+                            self.telecharger(
+                                url,
+                                fichier,
+                                feedback,
+                                i,
+                                total
+                            )
+
+                            break
+
+                        except QgsProcessingException:
+                            raise
+
+                        except Exception as e:
+
+                            if tentative == self.NB_TENTATIVES:
+                                raise
+
+                            feedback.pushWarning(
+                                f"    → échec ({e}), nouvelle "
+                                f"tentative {tentative + 1}"
+                                f"/{self.NB_TENTATIVES}..."
+                            )
+
+                            time.sleep(5)
 
                     self.nb_telecharges += 1
 
