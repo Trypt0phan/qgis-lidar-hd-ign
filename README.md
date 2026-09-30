@@ -68,11 +68,26 @@ Puis redémarrer QGIS.
 ![Téléchargement de nuages de points LiDAR (NPL) pour deux dalles sélectionnées](charger_lidar.png)
 
 Seules les dalles sélectionnées sont téléchargées. Les fichiers déjà présents
-dans le dossier ne sont pas téléchargés à nouveau. Un téléchargement en cours
-est écrit dans un fichier `.part`, renommé seulement une fois complet ; en cas
-d'absence de réponse du serveur, le script retente jusqu'à 3 fois. Un bilan s'affiche à la fin
+dans le dossier ne sont pas téléchargés à nouveau. Un bilan s'affiche à la fin
 dans le journal : nombre de dalles téléchargées, déjà présentes, ajoutées au
 projet, et nombre d'erreurs.
+
+### Fiabilité
+
+- **Fichiers incomplets** : un téléchargement en cours est écrit dans un
+  fichier `.part`, renommé seulement une fois complet. Un fichier interrompu
+  n'est donc jamais pris pour un fichier déjà téléchargé.
+- **Serveur qui ne répond pas** : le téléchargement d'une dalle est retenté
+  jusqu'à 3 fois (délai dépassé, coupure réseau, erreur serveur). Une erreur
+  définitive, comme un fichier absent (404), n'est pas retentée.
+- **Espace disque** : avant de commencer, le volume à télécharger est estimé
+  (environ 150 Mo par dalle NPL, 16 Mo par dalle MNT, MNS ou MNH) et comparé à
+  l'espace libre. S'il manque de la place, rien n'est téléchargé. Pendant les
+  téléchargements, le script s'arrête proprement s'il reste moins de 2 Go
+  libres ; les dalles déjà téléchargées sont conservées et ajoutées au projet.
+- **Annulation** : les dalles déjà téléchargées sont conservées dans le
+  dossier, mais QGIS ne les ajoute pas au projet. Relancez avec la même
+  sélection : elles seront reconnues comme déjà présentes et ajoutées.
 
 ## Remarques
 
@@ -80,8 +95,13 @@ projet, et nombre d'erreurs.
   retournée par le serveur est incorrecte »*. Il vient du service WFS et
   n'empêche pas l'utilisation : il suffit de zoomer sur la zone voulue sans
   utiliser « Zoomer sur la couche ».
-- Les nuages de points (NPL) sont volumineux : quelques centaines de Mo par
+- Les nuages de points (NPL) sont volumineux : de 75 à 350 Mo environ par
   dalle.
+- Le script 1 n'a pas de paramètre : QGIS l'exécute directement, sans
+  fenêtre. Ses messages s'affichent dans la barre de messages en haut de la
+  carte.
+- La couche de dallage peut être renommée : les scripts la reconnaissent à
+  sa source WFS.
 
 ## Sources des données
 

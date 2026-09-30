@@ -173,6 +173,24 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             </p>
 
             <p>
+            Si le serveur ne répond pas, le téléchargement
+            d'une dalle est retenté jusqu'à 3 fois.
+            </p>
+
+            <p>
+            Avant de commencer, le volume à télécharger est
+            estimé et comparé à l'espace libre du disque :
+            s'il manque de la place, rien n'est téléchargé.
+            Au moins 2 Go sont toujours laissés libres.
+            </p>
+
+            <p>
+            En cas d'annulation, les dalles déjà téléchargées
+            sont conservées. Relancez avec la même sélection
+            pour terminer et les ajouter au projet.
+            </p>
+
+            <p>
             <b>Important :</b>
             seules les dalles sélectionnées sont téléchargées.
             </p>
