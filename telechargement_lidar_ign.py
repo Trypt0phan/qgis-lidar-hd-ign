@@ -360,11 +360,14 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
         request = urllib.request.Request(
             url,
             headers={
+                # Le serveur de téléchargement IGN refuse
+                # l'identité par défaut de Python (403) :
+                # le script se présente sous son propre nom.
+
                 "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) "
-                    "Chrome/130.0 Safari/537.36"
+                    "qgis-lidar-hd-ign "
+                    "(+https://github.com/Trypt0phan/"
+                    "qgis-lidar-hd-ign)"
                 ),
                 "Referer": "https://geoservices.ign.fr/",
                 "Accept": "*/*"
