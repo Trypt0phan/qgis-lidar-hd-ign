@@ -26,6 +26,20 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
     NOM_COUCHE = 'IGNF_LIDAR-HD_METADONNEE:metadata'
 
+    CHAMPS = {
+        0: 'url_mnt',
+        1: 'url_mns',
+        2: 'url_mnh',
+        3: 'url_npl'
+    }
+
+    NOMS_TYPES = {
+        0: 'MNT',
+        1: 'MNS',
+        2: 'MNH',
+        3: 'NPL'
+    }
+
     NB_TENTATIVES = 3
     DELAI_REPONSE = 60
 
@@ -319,23 +333,20 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             raise
 
     # =========================================================
-    # TRAITEMENT PRINCIPAL
+    # PRÉPARATION (THREAD PRINCIPAL)
     # =========================================================
 
-    def processAlgorithm(
+    def prepareAlgorithm(
         self,
         parameters,
         context,
         feedback
     ):
 
-        self.fichiers_a_charger = []
-
-        self.ajouter_apres = False
-
-        self.nb_telecharges = 0
-        self.nb_existants = 0
-        self.nb_erreurs = 0
+        # Exécutée dans le thread principal de QGIS :
+        # c'est ici, et non dans processAlgorithm (qui
+        # tourne en arrière-plan), que la couche et sa
+        # sélection peuvent être lues sans risque.
 
         # =====================================================
         # DALLAGE
@@ -368,7 +379,54 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                 "Aucun téléchargement n'a été effectué."
             )
 
-        features = layer.selectedFeatures()
+        # =====================================================
+        # VÉRIFICATION DU CHAMP
+        # =====================================================
+
+        type_index = self.parameterAsEnum(
+            parameters,
+            self.TYPE_DONNEE,
+            context
+        )
+
+        champ_url = self.CHAMPS[type_index]
+
+        if champ_url not in layer.fields().names():
+
+            raise QgsProcessingException(
+                f"Le champ « {champ_url} » n'existe pas "
+                "dans le dallage LiDAR IGN."
+            )
+
+        # =====================================================
+        # COPIE DES URL DES DALLES SÉLECTIONNÉES
+        # =====================================================
+
+        self.dalles = [
+            (feature.id(), feature[champ_url])
+            for feature in layer.selectedFeatures()
+        ]
+
+        return True
+
+    # =========================================================
+    # TRAITEMENT PRINCIPAL
+    # =========================================================
+
+    def processAlgorithm(
+        self,
+        parameters,
+        context,
+        feedback
+    ):
+
+        self.fichiers_a_charger = []
+
+        self.ajouter_apres = False
+
+        self.nb_telecharges = 0
+        self.nb_existants = 0
+        self.nb_erreurs = 0
 
         # =====================================================
         # PARAMÈTRES
@@ -415,44 +473,18 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
         self.dossier_final = dossier
 
         # =====================================================
-        # PRODUITS
+        # PRODUIT
         # =====================================================
 
-        champs = {
-            0: 'url_mnt',
-            1: 'url_mns',
-            2: 'url_mnh',
-            3: 'url_npl'
-        }
-
-        noms_types = {
-            0: 'MNT',
-            1: 'MNS',
-            2: 'MNH',
-            3: 'NPL'
-        }
-
-        champ_url = champs[type_index]
-        nom_type = noms_types[type_index]
+        nom_type = self.NOMS_TYPES[type_index]
 
         self.nom_type_final = nom_type
-
-        # =====================================================
-        # VÉRIFICATION DU CHAMP
-        # =====================================================
-
-        if champ_url not in layer.fields().names():
-
-            raise QgsProcessingException(
-                f"Le champ « {champ_url} » n'existe pas "
-                "dans le dallage LiDAR IGN."
-            )
 
         # =====================================================
         # DÉBUT
         # =====================================================
 
-        total = len(features)
+        total = len(self.dalles)
 
         self.total_final = total
 
@@ -474,17 +506,15 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
         # BOUCLE
         # =====================================================
 
-        for i, feature in enumerate(features):
+        for i, (fid, url) in enumerate(self.dalles):
 
             if feedback.isCanceled():
                 break
 
-            url = feature[champ_url]
-
             if not url:
 
                 feedback.reportError(
-                    f"Entité {feature.id()} : URL absente."
+                    f"Entité {fid} : URL absente."
                 )
 
                 self.nb_erreurs += 1
@@ -507,7 +537,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                     nom = params_url.get(
                         'FILENAME',
                         [
-                            f'{nom_type}_{feature.id()}.tif'
+                            f'{nom_type}_{fid}.tif'
                         ]
                     )[0]
 
@@ -529,7 +559,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                         nom = (
                             f'LIDAR_'
-                            f'{feature.id()}.copc.laz'
+                            f'{fid}.copc.laz'
                         )
 
                 # =============================================
@@ -643,7 +673,7 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
 
                 feedback.reportError(
                     f"Erreur pour l'entité "
-                    f"{feature.id()} : {e}"
+                    f"{fid} : {e}"
                 )
 
                 self.nb_erreurs += 1
