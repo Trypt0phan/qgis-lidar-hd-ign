@@ -1,0 +1,882 @@
+from qgis.PyQt.QtCore import QCoreApplication, QStandardPaths
+
+from qgis.core import (
+    QgsProcessingAlgorithm,
+    QgsProcessingParameterEnum,
+    QgsProcessingParameterFolderDestination,
+    QgsProcessingParameterBoolean,
+    QgsProcessingException,
+    QgsProject,
+    QgsVectorLayer,
+    QgsRasterLayer,
+    QgsPointCloudLayer
+)
+
+import os
+import urllib.request
+from urllib.parse import urlparse, parse_qs, unquote
+
+
+class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
+
+    TYPE_DONNEE = 'TYPE_DONNEE'
+    DOSSIER = 'DOSSIER'
+    AJOUTER = 'AJOUTER'
+
+    NOM_COUCHE = 'IGNF_LIDAR-HD_METADONNEE:metadata'
+
+    # =========================================================
+    # INFORMATIONS PROCESSING
+    # =========================================================
+
+    def tr(self, string):
+        return QCoreApplication.translate(
+            'TelechargerDonneesLidarIGN',
+            string
+        )
+
+    def createInstance(self):
+        return TelechargerDonneesLidarIGN()
+
+    def name(self):
+        return 'telecharger_donnees_lidar_ign'
+
+    def displayName(self):
+        return self.tr(
+            '2 - Télécharger les données LiDAR IGN'
+        )
+
+    def group(self):
+        return self.tr('LiDAR IGN')
+
+    def groupId(self):
+        return 'lidar_ign'
+
+    # =========================================================
+    # AIDE
+    # =========================================================
+
+    def shortHelpString(self):
+
+        return self.tr(
+            """
+            <h2>Télécharger les données LiDAR HD IGN</h2>
+
+            <p>
+            Télécharge les données correspondant
+            <b>uniquement aux dalles sélectionnées</b>.
+            </p>
+
+            <h3>Utilisation</h3>
+
+            <ol>
+                <li>
+                    Chargez le dallage avec
+                    <b>1 - Charger le dallage LiDAR IGN</b>.
+                </li>
+
+                <li>
+                    Sélectionnez une ou plusieurs dalles.
+                </li>
+
+                <li>
+                    Choisissez le produit :
+                    MNT, MNS, MNH ou NPL.
+                </li>
+
+                <li>
+                    Conservez le dossier proposé
+                    ou choisissez-en un autre.
+                </li>
+
+                <li>
+                    Cliquez sur <b>Exécuter</b>.
+                </li>
+            </ol>
+
+            <p>
+            <b>MNT</b> : Modèle numérique de terrain<br>
+            <b>MNS</b> : Modèle numérique de surface<br>
+            <b>MNH</b> : Modèle numérique de hauteur<br>
+            <b>NPL</b> : Nuage de points LiDAR COPC.LAZ
+            </p>
+
+            <p>
+            Les fichiers sont enregistrés par défaut dans
+            <b>Téléchargements/LiDAR_IGN</b>.
+            </p>
+
+            <p>
+            Les fichiers déjà présents ne sont pas
+            téléchargés une seconde fois.
+            </p>
+
+            <p>
+            Le téléchargement est effectué en arrière-plan.
+            Les couches sont ajoutées au projet une fois
+            les téléchargements terminés.
+            </p>
+
+            <p>
+            <b>Important :</b>
+            seules les dalles sélectionnées sont téléchargées.
+            </p>
+            """
+        )
+
+    # =========================================================
+    # PARAMÈTRES
+    # =========================================================
+
+    def initAlgorithm(self, config=None):
+
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.TYPE_DONNEE,
+                self.tr('Donnée à télécharger'),
+                options=[
+                    'MNT — Modèle numérique de terrain',
+                    'MNS — Modèle numérique de surface',
+                    'MNH — Modèle numérique de hauteur',
+                    'NPL — Nuage de points LiDAR (COPC.LAZ)'
+                ],
+                defaultValue=0
+            )
+        )
+
+        # -----------------------------------------------------
+        # Dossier Téléchargements de l'utilisateur
+        # -----------------------------------------------------
+
+        dossier_telechargements = (
+            QStandardPaths.writableLocation(
+                QStandardPaths.DownloadLocation
+            )
+        )
+
+        if not dossier_telechargements:
+            dossier_telechargements = os.path.expanduser("~")
+
+        dossier_defaut = os.path.join(
+            dossier_telechargements,
+            "LiDAR_IGN"
+        )
+
+        self.addParameter(
+            QgsProcessingParameterFolderDestination(
+                self.DOSSIER,
+                self.tr('Dossier de téléchargement'),
+                defaultValue=dossier_defaut
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.AJOUTER,
+                self.tr(
+                    'Ajouter les données téléchargées au projet'
+                ),
+                defaultValue=True
+            )
+        )
+
+    # =========================================================
+    # RECHERCHE DU DALLAGE
+    # =========================================================
+
+    def trouver_couche_emprise(self):
+
+        for layer in QgsProject.instance().mapLayers().values():
+
+            if (
+                layer.name() == self.NOM_COUCHE
+                and isinstance(layer, QgsVectorLayer)
+            ):
+                return layer
+
+        return None
+
+    # =========================================================
+    # TÉLÉCHARGEMENT
+    # =========================================================
+
+    def telecharger(
+        self,
+        url,
+        fichier,
+        feedback,
+        index_dalle,
+        total_dalles
+    ):
+
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/130.0 Safari/537.36"
+                ),
+                "Referer": "https://geoservices.ign.fr/",
+                "Accept": "*/*"
+            }
+        )
+
+        try:
+
+            with urllib.request.urlopen(
+                request,
+                timeout=120
+            ) as response:
+
+                # ---------------------------------------------
+                # Taille totale du fichier, si fournie
+                # par le serveur
+                # ---------------------------------------------
+
+                taille_totale = response.headers.get(
+                    "Content-Length"
+                )
+
+                if taille_totale:
+
+                    try:
+                        taille_totale = int(taille_totale)
+                    except Exception:
+                        taille_totale = None
+
+                telecharge = 0
+
+                with open(fichier, "wb") as output:
+
+                    while True:
+
+                        # -------------------------------------
+                        # ANNULATION PAR L'UTILISATEUR
+                        # -------------------------------------
+
+                        if feedback.isCanceled():
+
+                            raise QgsProcessingException(
+                                "Téléchargement annulé."
+                            )
+
+                        # -------------------------------------
+                        # Lecture par blocs de 1 Mo
+                        # -------------------------------------
+
+                        chunk = response.read(
+                            1024 * 1024
+                        )
+
+                        if not chunk:
+                            break
+
+                        output.write(chunk)
+
+                        telecharge += len(chunk)
+
+                        # -------------------------------------
+                        # PROGRESSION GLOBALE
+                        #
+                        # Exemple avec 4 dalles :
+                        # dalle 1 = 0 -> 25 %
+                        # dalle 2 = 25 -> 50 %
+                        # etc.
+                        # -------------------------------------
+
+                        if taille_totale:
+
+                            progression_fichier = (
+                                telecharge / taille_totale
+                            )
+
+                            progression_globale = (
+                                (
+                                    index_dalle
+                                    + progression_fichier
+                                )
+                                / total_dalles
+                            ) * 100
+
+                            feedback.setProgress(
+                                int(progression_globale)
+                            )
+
+        except Exception:
+
+            # ---------------------------------------------
+            # Ne jamais conserver un téléchargement partiel
+            # ---------------------------------------------
+
+            if os.path.exists(fichier):
+
+                try:
+                    os.remove(fichier)
+                except Exception:
+                    pass
+
+            raise
+
+    # =========================================================
+    # TRAITEMENT PRINCIPAL
+    #
+    # Cette partie peut fonctionner dans le thread Processing.
+    # AUCUNE création de QgsPointCloudLayer ici.
+    # =========================================================
+
+    def processAlgorithm(
+        self,
+        parameters,
+        context,
+        feedback
+    ):
+
+        # -----------------------------------------------------
+        # Liste utilisée ensuite par postProcessAlgorithm()
+        # -----------------------------------------------------
+
+        self.fichiers_a_charger = []
+
+        self.ajouter_apres = False
+
+        self.nb_telecharges = 0
+        self.nb_existants = 0
+        self.nb_erreurs = 0
+
+        # =====================================================
+        # DALLAGE
+        # =====================================================
+
+        layer = self.trouver_couche_emprise()
+
+        if layer is None:
+
+            raise QgsProcessingException(
+                "\n"
+                "DALLAGE LIDAR IGN ABSENT\n\n"
+                "Le dallage LiDAR IGN n'est pas présent "
+                "dans le projet.\n\n"
+                "Utilisez d'abord :\n\n"
+                "« 1 - Charger le dallage LiDAR IGN »"
+            )
+
+        # =====================================================
+        # SÉLECTION OBLIGATOIRE
+        # =====================================================
+
+        if layer.selectedFeatureCount() == 0:
+
+            raise QgsProcessingException(
+                "\n"
+                "AUCUNE DALLE SÉLECTIONNÉE\n\n"
+                "Sélectionnez une ou plusieurs dalles "
+                "avant de lancer le téléchargement.\n\n"
+                "Aucun téléchargement n'a été effectué."
+            )
+
+        # -----------------------------------------------------
+        # Copie des entités sélectionnées
+        # -----------------------------------------------------
+
+        features = layer.selectedFeatures()
+
+        # =====================================================
+        # PARAMÈTRES
+        # =====================================================
+
+        type_index = self.parameterAsEnum(
+            parameters,
+            self.TYPE_DONNEE,
+            context
+        )
+
+        dossier = self.parameterAsString(
+            parameters,
+            self.DOSSIER,
+            context
+        )
+
+        ajouter = self.parameterAsBool(
+            parameters,
+            self.AJOUTER,
+            context
+        )
+
+        self.ajouter_apres = ajouter
+
+        # =====================================================
+        # DOSSIER
+        # =====================================================
+
+        if not dossier:
+
+            raise QgsProcessingException(
+                "Aucun dossier de téléchargement "
+                "n'a été défini."
+            )
+
+        dossier = os.path.expanduser(dossier)
+
+        os.makedirs(
+            dossier,
+            exist_ok=True
+        )
+
+        self.dossier_final = dossier
+
+        # =====================================================
+        # PRODUITS
+        # =====================================================
+
+        champs = {
+            0: 'url_mnt',
+            1: 'url_mns',
+            2: 'url_mnh',
+            3: 'url_npl'
+        }
+
+        noms_types = {
+            0: 'MNT',
+            1: 'MNS',
+            2: 'MNH',
+            3: 'NPL'
+        }
+
+        champ_url = champs[type_index]
+        nom_type = noms_types[type_index]
+
+        self.nom_type_final = nom_type
+
+        # =====================================================
+        # VÉRIFICATION DU CHAMP
+        # =====================================================
+
+        if champ_url not in layer.fields().names():
+
+            raise QgsProcessingException(
+                f"Le champ « {champ_url} » n'existe pas "
+                "dans le dallage LiDAR IGN."
+            )
+
+        # =====================================================
+        # DÉBUT
+        # =====================================================
+
+        total = len(features)
+
+        self.total_final = total
+
+        feedback.pushInfo(
+            f"{total} dalle(s) sélectionnée(s)"
+        )
+
+        feedback.pushInfo(
+            f"Produit : {nom_type}"
+        )
+
+        feedback.pushInfo(
+            f"Dossier : {dossier}"
+        )
+
+        feedback.pushInfo('')
+
+        # =====================================================
+        # BOUCLE
+        # =====================================================
+
+        for i, feature in enumerate(features):
+
+            if feedback.isCanceled():
+                break
+
+            # =================================================
+            # URL
+            # =================================================
+
+            url = feature[champ_url]
+
+            if not url:
+
+                feedback.reportError(
+                    f"Entité {feature.id()} : URL absente."
+                )
+
+                self.nb_erreurs += 1
+                continue
+
+            url = str(url)
+
+            try:
+
+                # =============================================
+                # NOM MNT / MNS / MNH
+                # =============================================
+
+                if type_index in (0, 1, 2):
+
+                    params_url = parse_qs(
+                        urlparse(url).query
+                    )
+
+                    nom = params_url.get(
+                        'FILENAME',
+                        [
+                            f'{nom_type}_{feature.id()}.tif'
+                        ]
+                    )[0]
+
+                    nom = unquote(nom)
+
+                # =============================================
+                # NOM NPL
+                # =============================================
+
+                else:
+
+                    nom = unquote(
+                        os.path.basename(
+                            urlparse(url).path
+                        )
+                    )
+
+                    if not nom:
+
+                        nom = (
+                            f'LIDAR_'
+                            f'{feature.id()}.copc.laz'
+                        )
+
+                # =============================================
+                # FICHIER LOCAL
+                # =============================================
+
+                fichier = os.path.join(
+                    dossier,
+                    nom
+                )
+
+                feedback.pushInfo(
+                    f"[{i + 1}/{total}] {nom}"
+                )
+
+                # =============================================
+                # TÉLÉCHARGEMENT
+                # =============================================
+
+                if not os.path.exists(fichier):
+
+                    feedback.pushInfo(
+                        "    → téléchargement..."
+                    )
+
+                    self.telecharger(
+                        url,
+                        fichier,
+                        feedback,
+                        i,
+                        total
+                    )
+
+                    self.nb_telecharges += 1
+
+                    taille_mo = (
+                        os.path.getsize(fichier)
+                        / (1024 * 1024)
+                    )
+
+                    feedback.pushInfo(
+                        f"    → terminé "
+                        f"({taille_mo:.1f} Mo)"
+                    )
+
+                else:
+
+                    self.nb_existants += 1
+
+                    taille_mo = (
+                        os.path.getsize(fichier)
+                        / (1024 * 1024)
+                    )
+
+                    feedback.pushInfo(
+                        f"    → déjà présent "
+                        f"({taille_mo:.1f} Mo)"
+                    )
+
+                    # -----------------------------------------
+                    # Si le fichier existe, on avance quand
+                    # même la barre de progression.
+                    # -----------------------------------------
+
+                    feedback.setProgress(
+                        int(
+                            ((i + 1) / total) * 100
+                        )
+                    )
+
+                # =============================================
+                # MÉMORISATION POUR LE THREAD PRINCIPAL
+                # =============================================
+
+                if ajouter:
+
+                    self.fichiers_a_charger.append(
+                        (
+                            fichier,
+                            nom,
+                            type_index
+                        )
+                    )
+
+            except QgsProcessingException:
+                raise
+
+            except Exception as e:
+
+                feedback.reportError(
+                    f"Erreur pour l'entité "
+                    f"{feature.id()} : {e}"
+                )
+
+                self.nb_erreurs += 1
+
+        # =====================================================
+        # FIN DE LA PARTIE TÉLÉCHARGEMENT
+        # =====================================================
+
+        feedback.pushInfo('')
+        feedback.pushInfo(
+            "Téléchargements terminés."
+        )
+
+        if ajouter:
+
+            feedback.pushInfo(
+                "Les couches vont maintenant être "
+                "ajoutées au projet."
+            )
+
+        return {}
+
+    # =========================================================
+    # POST-TRAITEMENT
+    #
+    # QGIS appelle cette méthode APRÈS processAlgorithm().
+    #
+    # C'est ici que l'on crée les couches, et notamment
+    # QgsPointCloudLayer.
+    # =========================================================
+
+    def postProcessAlgorithm(
+        self,
+        context,
+        feedback
+    ):
+
+        nb_charges = 0
+
+        # =====================================================
+        # AJOUT DEMANDÉ ?
+        # =====================================================
+
+        if self.ajouter_apres:
+
+            project = QgsProject.instance()
+
+            # -------------------------------------------------
+            # Sources déjà chargées
+            # -------------------------------------------------
+
+            sources_existantes = set()
+
+            for lyr in project.mapLayers().values():
+
+                try:
+
+                    source = lyr.source()
+
+                    if source:
+
+                        sources_existantes.add(
+                            os.path.abspath(source)
+                        )
+
+                except Exception:
+                    pass
+
+            # =================================================
+            # AJOUT DES FICHIERS
+            # =================================================
+
+            for (
+                fichier,
+                nom,
+                data_type
+            ) in self.fichiers_a_charger:
+
+                fichier_absolu = os.path.abspath(
+                    fichier
+                )
+
+                # ---------------------------------------------
+                # Déjà chargé
+                # ---------------------------------------------
+
+                if fichier_absolu in sources_existantes:
+
+                    feedback.pushInfo(
+                        f"    → {nom} déjà chargé "
+                        "dans le projet"
+                    )
+
+                    continue
+
+                try:
+
+                    # =========================================
+                    # RASTER
+                    # =========================================
+
+                    if data_type in (0, 1, 2):
+
+                        couche = QgsRasterLayer(
+                            fichier,
+                            nom
+                        )
+
+                    # =========================================
+                    # COPC
+                    #
+                    # C'est exactement la méthode qui avait
+                    # fonctionné dans la console QGIS.
+                    # =========================================
+
+                    else:
+
+                        options = (
+                            QgsPointCloudLayer.LayerOptions()
+                        )
+
+                        options.loadDefaultStyle = True
+
+                        couche = QgsPointCloudLayer(
+                            fichier,
+                            nom,
+                            'copc',
+                            options
+                        )
+
+                    # =========================================
+                    # CONTRÔLE
+                    # =========================================
+
+                    if not couche.isValid():
+
+                        feedback.reportError(
+                            f"Impossible de charger : {nom}"
+                        )
+
+                        self.nb_erreurs += 1
+                        continue
+
+                    # =========================================
+                    # AJOUT AU PROJET
+                    # =========================================
+
+                    project.addMapLayer(
+                        couche
+                    )
+
+                    sources_existantes.add(
+                        fichier_absolu
+                    )
+
+                    nb_charges += 1
+
+                    # =========================================
+                    # DIAGNOSTIC COPC
+                    # =========================================
+
+                    if data_type == 3:
+
+                        feedback.pushInfo(
+                            f"    → provider : "
+                            f"{couche.providerType()}"
+                        )
+
+                        renderer = couche.renderer()
+
+                        if renderer is not None:
+
+                            feedback.pushInfo(
+                                f"    → renderer : "
+                                f"{renderer.type()}"
+                            )
+
+                    couche.triggerRepaint()
+
+                    feedback.pushInfo(
+                        f"    → {nom} ajouté au projet"
+                    )
+
+                except Exception as e:
+
+                    feedback.reportError(
+                        f"Erreur lors de l'ajout de "
+                        f"{nom} : {e}"
+                    )
+
+                    self.nb_erreurs += 1
+
+        # =====================================================
+        # BILAN FINAL
+        # =====================================================
+
+        feedback.pushInfo('')
+        feedback.pushInfo(
+            '=============================='
+        )
+
+        feedback.pushInfo(
+            'LiDAR HD IGN — TERMINÉ'
+        )
+
+        feedback.pushInfo(
+            '=============================='
+        )
+
+        feedback.pushInfo(
+            f'Produit : {self.nom_type_final}'
+        )
+
+        feedback.pushInfo(
+            f'Dalles sélectionnées : {self.total_final}'
+        )
+
+        feedback.pushInfo(
+            f'Nouveaux téléchargements : '
+            f'{self.nb_telecharges}'
+        )
+
+        feedback.pushInfo(
+            f'Déjà présents : {self.nb_existants}'
+        )
+
+        if self.ajouter_apres:
+
+            feedback.pushInfo(
+                f'Couches ajoutées au projet : '
+                f'{nb_charges}'
+            )
+
+        feedback.pushInfo(
+            f'Erreurs : {self.nb_erreurs}'
+        )
+
+        feedback.pushInfo(
+            f'Dossier : {self.dossier_final}'
+        )
+
+        return {}
