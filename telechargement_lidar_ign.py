@@ -15,10 +15,15 @@ from qgis.core import (
 )
 
 import os
+import shutil
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse, parse_qs, unquote, quote
+
+
+MO = 1024 * 1024
+GO = 1024 * MO
 
 
 class TelechargementAnnule(Exception):
@@ -58,6 +63,19 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
         2: 'MNH',
         3: 'NPL'
     }
+
+    # Taille type d'une dalle, pour estimer le volume
+    # à télécharger (les NPL vont de 75 à 350 Mo environ).
+
+    TAILLE_TYPE = {
+        0: 16 * MO,
+        1: 16 * MO,
+        2: 16 * MO,
+        3: 150 * MO
+    }
+
+    # Espace disque toujours laissé libre
+    MARGE_DISQUE = 2 * GO
 
     NB_TENTATIVES = 3
     DELAI_REPONSE = 60
@@ -279,6 +297,45 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             )
 
         return urllib.request.build_opener()
+
+    # =========================================================
+    # NOM DU FICHIER LOCAL
+    # =========================================================
+
+    def nom_fichier(self, url, type_index, fid):
+
+        nom_type = self.NOMS_TYPES[type_index]
+
+        # MNT / MNS / MNH : nom donné par le paramètre
+        # FILENAME de l'URL
+
+        if type_index in (0, 1, 2):
+
+            params_url = parse_qs(
+                urlparse(url).query
+            )
+
+            nom = params_url.get(
+                'FILENAME',
+                [
+                    f'{nom_type}_{fid}.tif'
+                ]
+            )[0]
+
+            # basename : le nom ne peut pas
+            # désigner un autre dossier (« ../ »).
+
+            nom = os.path.basename(unquote(nom))
+
+            return nom or f'{nom_type}_{fid}.tif'
+
+        # NPL : dernier élément du chemin de l'URL
+
+        nom = os.path.basename(
+            unquote(urlparse(url).path)
+        )
+
+        return nom or f'LIDAR_{fid}.copc.laz'
 
     # =========================================================
     # TÉLÉCHARGEMENT
@@ -590,6 +647,49 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             f"Dossier : {dossier}"
         )
 
+        # =====================================================
+        # ESPACE DISQUE
+        # =====================================================
+
+        # Estimation à partir d'une taille type par dalle,
+        # sans compter les fichiers déjà présents.
+
+        a_telecharger = sum(
+            1
+            for fid, url in self.dalles
+            if url and not os.path.exists(
+                os.path.join(
+                    dossier,
+                    self.nom_fichier(str(url), type_index, fid)
+                )
+            )
+        )
+
+        volume_estime = (
+            a_telecharger * self.TAILLE_TYPE[type_index]
+        )
+
+        libre = shutil.disk_usage(dossier).free
+
+        feedback.pushInfo(
+            f"À télécharger : {a_telecharger} dalle(s), "
+            f"environ {volume_estime / GO:.1f} Go "
+            f"({libre / GO:.1f} Go libres)"
+        )
+
+        if volume_estime + self.MARGE_DISQUE > libre:
+
+            raise QgsProcessingException(
+                "\n"
+                "ESPACE DISQUE INSUFFISANT\n\n"
+                f"Volume estimé : {volume_estime / GO:.1f} Go "
+                f"({a_telecharger} dalle(s) {nom_type}).\n"
+                f"Espace libre : {libre / GO:.1f} Go.\n\n"
+                "Réduisez la sélection ou choisissez "
+                "un autre dossier.\n\n"
+                "Aucun téléchargement n'a été effectué."
+            )
+
         feedback.pushInfo('')
 
         # =====================================================
@@ -615,51 +715,10 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
             try:
 
                 # =============================================
-                # NOM MNT / MNS / MNH
-                # =============================================
-
-                if type_index in (0, 1, 2):
-
-                    params_url = parse_qs(
-                        urlparse(url).query
-                    )
-
-                    nom = params_url.get(
-                        'FILENAME',
-                        [
-                            f'{nom_type}_{fid}.tif'
-                        ]
-                    )[0]
-
-                    # basename : le nom ne peut pas
-                    # désigner un autre dossier (« ../ »).
-
-                    nom = os.path.basename(unquote(nom))
-
-                    if not nom:
-
-                        nom = f'{nom_type}_{fid}.tif'
-
-                # =============================================
-                # NOM NPL
-                # =============================================
-
-                else:
-
-                    nom = os.path.basename(
-                        unquote(urlparse(url).path)
-                    )
-
-                    if not nom:
-
-                        nom = (
-                            f'LIDAR_'
-                            f'{fid}.copc.laz'
-                        )
-
-                # =============================================
                 # FICHIER LOCAL
                 # =============================================
+
+                nom = self.nom_fichier(url, type_index, fid)
 
                 fichier = os.path.join(
                     dossier,
@@ -675,6 +734,27 @@ class TelechargerDonneesLidarIGN(QgsProcessingAlgorithm):
                 # =============================================
 
                 if not os.path.exists(fichier):
+
+                    # Filet de sécurité : l'estimation
+                    # initiale peut être dépassée, on ne
+                    # remplit jamais complètement le disque.
+
+                    libre = shutil.disk_usage(dossier).free
+
+                    if libre < self.MARGE_DISQUE:
+
+                        restantes = total - i
+
+                        feedback.reportError(
+                            f"Arrêt : espace disque "
+                            f"insuffisant ({libre / GO:.1f} Go "
+                            f"libres). {restantes} dalle(s) non "
+                            f"téléchargée(s). Les dalles déjà "
+                            f"téléchargées sont conservées."
+                        )
+
+                        self.nb_erreurs += restantes
+                        break
 
                     feedback.pushInfo(
                         "    → téléchargement..."
